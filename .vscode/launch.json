@@ -1,0 +1,39 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Launch Server",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/grpc",
+            "args": ["-p", "${input:port}"]
+        },
+        
+        {
+            "name": "Launch Client",
+            "type": "go",
+            "request": "launch",
+            "mode": "auto",
+            "program": "${workspaceFolder}/grpc",
+            "args": ["-s", "${input:hostname}", "-p", "${input:port}"],
+            "console": "integratedTerminal" 
+        },
+
+    ],
+    "inputs": [
+        {
+            "id": "hostname",
+            "type": "promptString",
+            "description": "Enter the server hostname",
+            "default": "localhost"
+        }, 
+        {
+            "id": "port",
+            "type": "promptString",
+            "description": "Enter the server port",
+            "default": "9876"
+        }
+    ]
+    
+}
