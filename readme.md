@@ -16,6 +16,9 @@ go build -o ./out/razpravljalnica ./grpc
 ./razpravljalnica -s $(hostname)
 
 ``` 
+## Z uporabo Visual Studio Code
+Lahko tudi uporabite `.vscode/launch.json` da zaženete Strežnik in nato Odjemalca znotraj Visual studio code 
+
 # Ukazi:
   ```
    1. createuser \<ime>                         - Ustvari novega uporabnika
