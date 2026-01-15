@@ -24,7 +24,8 @@ import (
 func Client(url string) {
 	// vzpostavimo povezavo s strežnikom
 	fmt.Printf("gRPC client connecting to %v\n", url)
-	conn, err := grpc.Dial(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// conn, err := grpc.Dial(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(err)
 	}
@@ -136,9 +137,15 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient) {
 				fmt.Println("Napaka: Neveljavna ID")
 				continue
 			}
-			currentUserID = id
-			fmt.Printf("Trenutni uporabnik: %d\n", currentUserID)
-
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			user, err := client.GetUser(ctx, &razpravljalnica.GetUserRequest{Id: id})
+			cancel()
+			if err != nil {
+				fmt.Printf("Napaka: %v\n", err)
+			} else {
+				fmt.Printf("Trenutni uporabnik: %s (%d)\n", user.Name, user.Id)
+				currentUserID = id
+			}
 		case "getuser":
 			if len(parts) < 2 {
 				fmt.Println("Napaka: getuser <id>")
@@ -224,9 +231,19 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient) {
 					fmt.Println("Ni sporočil.")
 				} else {
 					fmt.Println("Sporočila:")
+					usernames := make(map[int64]string)
 					for _, msg := range resp.Messages {
-						fmt.Printf("  [%d] Uporabnik %d: %s (Všečki: %d)\n",
-							msg.Id, msg.UserId, msg.Text, msg.Likes)
+						val, ok := usernames[msg.UserId]
+						if !ok {
+							user, err := getUser(msg.UserId, client)
+							if err != nil {
+								val = ""
+							} else {
+								val = user.Name
+							}
+						}
+						fmt.Printf("  [%d] Uporabnik '%s' %d: %s (Všečki: %d)\n",
+							msg.Id, val, msg.UserId, msg.Text, msg.Likes)
 					}
 				}
 			}
@@ -265,7 +282,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient) {
 
 		case "subscribe":
 			if len(parts) < 2 {
-				fmt.Println("Napaka: subscribe <topic_id_list>")
+				fmt.Println("Napaka: subscribe <topic_id>[,<topic_id>]*")
 				continue
 			}
 			if currentUserID == 0 {
@@ -366,4 +383,11 @@ func receiveMessages(client razpravljalnica.MessageBoardClient, ctx context.Cont
 		fmt.Printf("\n[%s] Uporabnik %d: %s (Všečki: %d)\n", opType, msg.UserId, msg.Text, msg.Likes)
 		fmt.Print("> ")
 	}
+}
+
+func getUser(id int64, client razpravljalnica.MessageBoardClient) (razpravljalnica.User, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	user, err := client.GetUser(ctx, &razpravljalnica.GetUserRequest{Id: id})
+	cancel()
+	return razpravljalnica.User{Id: user.Id, Name: user.Name}, err
 }
