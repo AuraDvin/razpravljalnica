@@ -274,20 +274,3 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 
 	return nil
 }
-
-// func (s *serverCRUD) Subscribe(e *emptypb.Empty, stream protobufStorage.CRUD_SubscribeServer) error {
-// 	// Implement this method to allow clients to subscribe to todo changes
-// 	// Message TodoEvent has the Todo message T with Action, which should be a string like
-// 	// "created: Dodan nov vnos v shrambo", "updated: Posodobljen vnos v shrambi", "deleted: Izbrisan vnos"
-// 	// Something like when other functions, send to stream the message and which action happened
-// 	s.todoStore.Subscribe()
-// 	for event, ok := <-storage.ActionsChan; ok; event, ok = <-storage.ActionsChan {
-// 		event_temp := &protobufStorage.TodoEvent{Action: event.Action, T: &protobufStorage.Todo{Task: event.T.Task, Completed: event.T.Completed}}
-// 		err := stream.Send(&protobufStorage.TodoEvent{Action: event_temp.Action, T: event_temp.T})
-// 		if err != nil {
-// 			return err
-// 		}
-// 	}
-// 	// s.todoStore.Unsubscribe()
-// 	return nil
-// }
