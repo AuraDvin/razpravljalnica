@@ -7,7 +7,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"strconv"
@@ -365,12 +364,7 @@ func receiveMessages(client razpravljalnica.MessageBoardClient, ctx context.Cont
 		}
 
 		event, err := stream.Recv()
-		if err == io.EOF {
-			log.Println("Naročnina zaprta.")
-			return
-		}
 		if err != nil {
-			log.Printf("Napaka pri prejemanju: %v\n", err)
 			return
 		}
 
