@@ -791,29 +791,34 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 		}
 	}
 
-	// Počakaj na nove dogodke
-	for event := range channel {
-		pbEvent := &protobufStorage.MessageEvent{
-			SequenceNumber: event.SequenceNumber,
-			Op:             protobufStorage.OpType(event.Op),
-			Message: &protobufStorage.Message{
-				Id:        event.Message.ID,
-				TopicId:   event.Message.TopicID,
-				UserId:    event.Message.UserID,
-				Text:      event.Message.Text,
-				CreatedAt: event.Message.CreatedAt,
-				Likes:     event.Message.Likes,
-			},
-			EventAt: event.EventAt,
-		}
+	for {
+		select {
+		// Preklici izvajanje ce ni Context-a
+		case <-stream.Context().Done():
+			log.Printf("Client disconnected (unsubscribe)")
+			return nil
+		// Ujemi nove dogodke
+		case event := <-channel:
+			pbEvent := &protobufStorage.MessageEvent{
+				SequenceNumber: event.SequenceNumber,
+				Op:             protobufStorage.OpType(event.Op),
+				Message: &protobufStorage.Message{
+					Id:        event.Message.ID,
+					TopicId:   event.Message.TopicID,
+					UserId:    event.Message.UserID,
+					Text:      event.Message.Text,
+					CreatedAt: event.Message.CreatedAt,
+					Likes:     event.Message.Likes,
+				},
+				EventAt: event.EventAt,
+			}
 
-		if err := stream.Send(pbEvent); err != nil {
-			// Odjemalec je nepovezan
-			log.Printf("Error sending event to client: %v\n", err)
-			close(channel)
-			break
+			if err := stream.Send(pbEvent); err != nil {
+				// Odjemalec je nepovezan
+				log.Printf("Error sending event to client: %v\n", err)
+				close(channel)
+				return nil
+			}
 		}
 	}
-
-	return nil
 }
