@@ -22,25 +22,58 @@ import (
 )
 
 func Client(url string) {
-	// vzpostavimo povezavo s strežnikom
-	fmt.Printf("gRPC client connecting to %v\n", url)
-	conn, err := grpc.NewClient(url, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Parse the port from the URL to connect to control plane on port-1
+	parts := strings.Split(url, ":")
+	if len(parts) != 2 {
+		panic(fmt.Sprintf("invalid URL format: %s", url))
+	}
+
+	port, err := strconv.Atoi(parts[1])
+	if err != nil {
+		panic(fmt.Sprintf("invalid port in URL: %s", url))
+	}
+
+	// Control plane runs on port - 1
+	controlPlaneURL := fmt.Sprintf("localhost:%d", port-1)
+
+	// First connect to control plane to discover head server
+	fmt.Printf("gRPC client connecting to control plane at %v\n", controlPlaneURL)
+	cpConn, err := grpc.NewClient(controlPlaneURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		panic(err)
+	}
+	defer cpConn.Close()
+
+	cpClient := razpravljalnica.NewControlPlaneClient(cpConn)
+
+	// Get head server address from control plane
+	headServerInfo, err := cpClient.GetHeadServer(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to get head server from control plane: %v", err))
+	}
+
+	fmt.Printf("Control plane returned head server at %s\n", headServerInfo.Address)
+
+	// Connect to head server for write operations
+	conn, err := grpc.NewClient(headServerInfo.Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		panic(err)
 	}
 	defer conn.Close()
 
-	// vzpostavimo vmesnik gRPC
+	// Create clients for head server (writes) and control plane (read routing)
 	grpcClient := razpravljalnica.NewMessageBoardClient(conn)
 
-	// Začetek interaktivne lupine
-	runInteractiveClient(grpcClient)
+	// Start interactive client with both clients
+	runInteractiveClient(grpcClient, cpClient)
 }
 
-func runInteractiveClient(client razpravljalnica.MessageBoardClient) {
+func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient razpravljalnica.ControlPlaneClient) {
 	reader := bufio.NewReader(os.Stdin)
 	var currentUserID int64 = 0
 	var subscriptionToken string
+	var subscriptionServer razpravljalnica.MessageBoardClient
+	var subscriptionConn *grpc.ClientConn
 	var subscriptionCtx context.Context
 	var subscriptionCancel context.CancelFunc
 
@@ -298,26 +331,43 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient) {
 			})
 			cancel()
 			if err != nil {
-				fmt.Printf("Napaka: %v\n", err)
+				fmt.Printf("Napaka pri pridobivanju naročniškega vozlišča: %v\n", err)
 				continue
 			}
 
 			subscriptionToken = subResp.SubscribeToken
-			fmt.Printf("Naročen na %d tem. Token: %s\n", len(topicIDs), subscriptionToken[:20]+"...")
+			subscriptionServerAddr := subResp.Node.Address
+			fmt.Printf("Naročen na %d tem. Povezovanje s strežnikom %s\n", len(topicIDs), subscriptionServerAddr)
 
 			// Prekini prejšnjo naročnino, če obstaja
 			if subscriptionCancel != nil {
 				subscriptionCancel()
 			}
+			if subscriptionConn != nil {
+				subscriptionConn.Close()
+			}
+
+			// Vzpostavi povezavo s strežnikom za naročnino
+			subscriptionConn, err = grpc.NewClient(subscriptionServerAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju s strežnikom za naročnino: %v\n", err)
+				continue
+			}
+
+			subscriptionServer = razpravljalnica.NewMessageBoardClient(subscriptionConn)
 
 			// Začni prejemati sporočila
 			subscriptionCtx, subscriptionCancel = context.WithCancel(context.Background())
-			go receiveMessages(client, subscriptionCtx, subscriptionToken, topicIDs[0])
+			go receiveMessages(subscriptionServer, subscriptionCtx, subscriptionToken, topicIDs[0])
 
 		case "unsubscribe":
 			if subscriptionCancel != nil {
 				subscriptionCancel()
 				fmt.Println("Naročnina preklicana.")
+				if subscriptionConn != nil {
+					subscriptionConn.Close()
+					subscriptionConn = nil
+				}
 			} else {
 				fmt.Println("Nisi naročen na nobeno temo.")
 			}

@@ -37,8 +37,10 @@ message Like {
 }
 
 enum OpType {
-  OP_POST = 0; // add a message to a topic
-  OP_LIKE = 1; // like a message
+  OP_POST = 0;         // add a message to a topic
+  OP_LIKE = 1;         // like a message
+  OP_CREATE_USER = 2;  // create a new user
+  OP_CREATE_TOPIC = 3; // create a new topic
 }
 
 message NodeInfo {
@@ -150,15 +152,74 @@ message GetUserRequest {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Chain Replication Messages
+////////////////////////////////////////////////////////////////////////////////
+
+message ReplicateWriteRequest {
+  int64 sequence_number = 1;
+  OpType op = 2; // OP_POST or OP_LIKE
+  Message message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message ReplicateWriteAck {
+  int64 sequence_number = 1;
+  bool success = 2;
+  string error_message = 3;
+}
+
+enum ServerRole {
+  HEAD = 0;
+  MIDDLE = 1;
+  TAIL = 2;
+}
+
+message ServerRegistration {
+  string server_address = 1;
+  ServerRole role = 2;
+}
+
+message ServerStatus {
+  string server_address = 1;
+  int64 active_subscriptions = 2;
+}
+
+message ServerInfo {
+  string address = 1;
+  ServerRole role = 2;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Services - Control plane
 ////////////////////////////////////////////////////////////////////////////////
 
 // Return the head and the tail node address
 service ControlPlane {
   rpc GetClusterState(google.protobuf.Empty) returns (GetClusterStateResponse);
+  
+  // Register a server with the control plane
+  rpc RegisterServer(ServerRegistration) returns (google.protobuf.Empty);
+  
+  // Get the head server address
+  rpc GetHeadServer(google.protobuf.Empty) returns (ServerInfo);
+  
+  // Get a subscription server (load-balanced by least connections)
+  rpc GetSubscriptionServer(google.protobuf.Empty) returns (ServerInfo);
+  
+  // Report subscription count from a server
+  rpc ReportSubscriptionCount(ServerStatus) returns (google.protobuf.Empty);
 }
 
 message GetClusterStateResponse {
   NodeInfo head = 1;
   NodeInfo tail = 2;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Services - Chain Replication (inter-server communication)
+////////////////////////////////////////////////////////////////////////////////
+
+service ChainReplication {
+  // Replicate a write operation to the next server in chain
+  rpc ReplicateWrite(ReplicateWriteRequest) returns (ReplicateWriteAck);
 }

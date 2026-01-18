@@ -1,0 +1,6 @@
+createuser Alice
+createtopic General
+setuser 1
+postmessage 1 "Hello from Alice"
+getmessages 1 0 10
+exit

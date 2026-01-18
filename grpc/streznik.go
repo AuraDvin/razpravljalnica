@@ -9,17 +9,185 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"time"
 
-	"github.com/AuraDvin/razpravljalnica/grpc/protobufStorage"
+	protobufStorage "github.com/AuraDvin/razpravljalnica/grpc/protobufStorage"
 	"github.com/AuraDvin/razpravljalnica/storage"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+// ============================================================================
+// Control Plane State Management
+// ============================================================================
+
+type ServerNode struct {
+	Address               string
+	Role                  protobufStorage.ServerRole
+	ActiveSubscriptions   int64
+	NextServerAddress     string
+	NextServerConn        *grpc.ClientConn
+	NextServerChainClient protobufStorage.ChainReplicationClient
+}
+
+// Global control plane state (synchronized by mutex)
+var (
+	cpMutex           sync.RWMutex
+	serverRegistry    map[string]*ServerNode // address → ServerNode
+	headServerAddress string
+	tailServerAddress string
+)
+
+func initControlPlane() {
+	cpMutex.Lock()
+	defer cpMutex.Unlock()
+	serverRegistry = make(map[string]*ServerNode)
+}
+
+// RegisterServer registers a server with the control plane
+func (s *controlPlaneServer) RegisterServer(ctx context.Context, req *protobufStorage.ServerRegistration) (*emptypb.Empty, error) {
+	cpMutex.Lock()
+	defer cpMutex.Unlock()
+
+	log.Printf("Registering server %s with role %v\n", req.ServerAddress, req.Role)
+
+	node := &ServerNode{
+		Address:             req.ServerAddress,
+		Role:                req.Role,
+		ActiveSubscriptions: 0,
+	}
+
+	serverRegistry[req.ServerAddress] = node
+
+	// Update head and tail addresses
+	for addr, n := range serverRegistry {
+		if n.Role == protobufStorage.ServerRole_HEAD {
+			headServerAddress = addr
+		}
+		if n.Role == protobufStorage.ServerRole_TAIL {
+			tailServerAddress = addr
+		}
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// GetHeadServer returns the head server address
+func (s *controlPlaneServer) GetHeadServer(ctx context.Context, _ *emptypb.Empty) (*protobufStorage.ServerInfo, error) {
+	cpMutex.RLock()
+	defer cpMutex.RUnlock()
+
+	if headServerAddress == "" {
+		return nil, fmt.Errorf("no head server registered")
+	}
+
+	node := serverRegistry[headServerAddress]
+	return &protobufStorage.ServerInfo{
+		Address: node.Address,
+		Role:    node.Role,
+	}, nil
+}
+
+// GetSubscriptionServer returns the server with the least subscriptions
+func (s *controlPlaneServer) GetSubscriptionServer(ctx context.Context, _ *emptypb.Empty) (*protobufStorage.ServerInfo, error) {
+	cpMutex.RLock()
+	defer cpMutex.RUnlock()
+
+	if len(serverRegistry) == 0 {
+		return nil, fmt.Errorf("no servers registered")
+	}
+
+	// Find server with least subscriptions
+	var selectedNode *ServerNode
+	var minSubs int64 = int64(^uint64(0) >> 1) // max int64
+
+	for _, node := range serverRegistry {
+		if node.ActiveSubscriptions < minSubs {
+			minSubs = node.ActiveSubscriptions
+			selectedNode = node
+		}
+	}
+
+	if selectedNode == nil {
+		return nil, fmt.Errorf("no server found")
+	}
+
+	return &protobufStorage.ServerInfo{
+		Address: selectedNode.Address,
+		Role:    selectedNode.Role,
+	}, nil
+}
+
+// ReportSubscriptionCount updates the subscription count for a server
+func (s *controlPlaneServer) ReportSubscriptionCount(ctx context.Context, req *protobufStorage.ServerStatus) (*emptypb.Empty, error) {
+	cpMutex.Lock()
+	defer cpMutex.Unlock()
+
+	if node, exists := serverRegistry[req.ServerAddress]; exists {
+		node.ActiveSubscriptions = req.ActiveSubscriptions
+		log.Printf("Server %s subscription count updated to %d\n", req.ServerAddress, req.ActiveSubscriptions)
+	}
+
+	return &emptypb.Empty{}, nil
+}
+
+// Control plane server implementation
+type controlPlaneServer struct {
+	protobufStorage.UnimplementedControlPlaneServer
+}
+
+func (s *controlPlaneServer) GetClusterState(ctx context.Context, _ *emptypb.Empty) (*protobufStorage.GetClusterStateResponse, error) {
+	cpMutex.RLock()
+	defer cpMutex.RUnlock()
+
+	resp := &protobufStorage.GetClusterStateResponse{}
+
+	for _, node := range serverRegistry {
+		if node.Role == protobufStorage.ServerRole_HEAD {
+			resp.Head = &protobufStorage.NodeInfo{
+				NodeId:  node.Address,
+				Address: node.Address,
+			}
+		}
+		if node.Role == protobufStorage.ServerRole_TAIL {
+			resp.Tail = &protobufStorage.NodeInfo{
+				NodeId:  node.Address,
+				Address: node.Address,
+			}
+		}
+	}
+
+	return resp, nil
+}
+
 func StartServerChain(basePort int, numServers int) {
+	// Initialize control plane
+	initControlPlane()
+
+	// Start control plane server on a dedicated port (basePort - 1)
+	controlPlanePort := basePort - 1
+	controlPlaneURL := fmt.Sprintf("localhost:%d", controlPlanePort)
+
+	cpServer := &controlPlaneServer{}
+	grpcCPServer := grpc.NewServer()
+	protobufStorage.RegisterControlPlaneServer(grpcCPServer, cpServer)
+
+	go func() {
+		listener, err := net.Listen("tcp", controlPlaneURL)
+		if err != nil {
+			log.Fatalf("failed to listen for control plane on %s: %v", controlPlaneURL, err)
+		}
+		fmt.Printf("Control plane listening at %s\n", controlPlaneURL)
+		if err := grpcCPServer.Serve(listener); err != nil {
+			log.Fatalf("failed to serve control plane: %v", err)
+		}
+	}()
+
 	var servers []*grpc.Server
+	var mbServers []*messageBoardServer
 
 	// Create all servers in the chain
 	for i := 0; i < numServers; i++ {
@@ -32,16 +200,39 @@ func StartServerChain(basePort int, numServers int) {
 
 		// Create message board server
 		mbs := NewMessageBoardServer()
+		mbs.serverAddress = url
 
-		// If not the last server, connect to the next one
+		// Determine role based on position
+		if i == 0 {
+			mbs.role = protobufStorage.ServerRole_HEAD
+		} else if i == numServers-1 {
+			mbs.role = protobufStorage.ServerRole_TAIL
+		} else {
+			mbs.role = protobufStorage.ServerRole_MIDDLE
+		}
+
+		// Set up control plane client
+		cpConn, err := grpc.NewClient(controlPlaneURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Fatalf("failed to connect to control plane: %v", err)
+		}
+		mbs.controlPlaneClient = protobufStorage.NewControlPlaneClient(cpConn)
+
+		// If not the last server, set next server URL
 		if i < numServers-1 {
 			nextPort := basePort + i + 1
 			nextURL := fmt.Sprintf("localhost:%d", nextPort)
 			mbs.nextServerURL = nextURL
 		}
 
-		// Register the service
+		mbServers = append(mbServers, mbs)
+
+		// Register the services
 		protobufStorage.RegisterMessageBoardServer(grpcServer, mbs)
+
+		// Register ChainReplication service
+		chainReplServer := &chainReplicationServer{messageBoardServer: mbs}
+		protobufStorage.RegisterChainReplicationServer(grpcServer, chainReplServer)
 
 		// Start the server in a goroutine
 		go func(grpcServer *grpc.Server, url string, idx int, server *messageBoardServer) {
@@ -49,20 +240,30 @@ func StartServerChain(basePort int, numServers int) {
 			if err != nil {
 				log.Fatalf("failed to listen on %s: %v", url, err)
 			}
-			fmt.Printf("Server %d listening at %s\n", idx, url)
+			fmt.Printf("Server %d (role: %v) listening at %s\n", idx, server.role, url)
+
+			// Register server with control plane
+			time.Sleep(50 * time.Millisecond) // Ensure control plane is ready
+			_, err = server.controlPlaneClient.RegisterServer(context.Background(), &protobufStorage.ServerRegistration{
+				ServerAddress: url,
+				Role:          server.role,
+			})
+			if err != nil {
+				log.Printf("failed to register server %s with control plane: %v", url, err)
+			}
 
 			// If not the last server, connect to the next one after a short delay
 			if server.nextServerURL != "" {
 				go func() {
-					time.Sleep(100 * time.Millisecond)
+					time.Sleep(200 * time.Millisecond)
 					conn, err := grpc.NewClient(server.nextServerURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
 					if err != nil {
 						log.Printf("failed to connect to next server %s: %v", server.nextServerURL, err)
 						return
 					}
 					server.nextServerConn = conn
-					server.nextServerClient = protobufStorage.NewMessageBoardClient(conn)
-					fmt.Printf("Server %d connected to next server at %s\n", idx, server.nextServerURL)
+					server.nextServerChainClient = protobufStorage.NewChainReplicationClient(conn)
+					fmt.Printf("Server %d connected to chain client at %s\n", idx, server.nextServerURL)
 				}()
 			}
 
@@ -106,10 +307,15 @@ func Server(url string) {
 // struktura za strežnik MessageBoard
 type messageBoardServer struct {
 	protobufStorage.UnimplementedMessageBoardServer
-	store            *storage.DatabaseStorage
-	nextServerURL    string // URL of the next server in the chain (empty if last server)
-	nextServerConn   *grpc.ClientConn
-	nextServerClient protobufStorage.MessageBoardClient
+	store                   *storage.DatabaseStorage
+	role                    protobufStorage.ServerRole
+	serverAddress           string
+	controlPlaneClient      protobufStorage.ControlPlaneClient
+	nextServerURL           string // URL of the next server in the chain (empty if last server)
+	nextServerConn          *grpc.ClientConn
+	nextServerChainClient   protobufStorage.ChainReplicationClient
+	activeSubscriptionCount int64
+	subscriptionCountMutex  sync.Mutex
 }
 
 // pripravimo nov strežnik MessageBoard
@@ -117,10 +323,131 @@ func NewMessageBoardServer() *messageBoardServer {
 	return &messageBoardServer{
 		UnimplementedMessageBoardServer: protobufStorage.UnimplementedMessageBoardServer{},
 		store:                           storage.NewDatabaseStorage(),
+		role:                            protobufStorage.ServerRole_MIDDLE,
+		serverAddress:                   "",
+		controlPlaneClient:              nil,
 		nextServerURL:                   "",
 		nextServerConn:                  nil,
-		nextServerClient:                nil,
+		nextServerChainClient:           nil,
+		activeSubscriptionCount:         0,
 	}
+}
+
+// ============================================================================
+// Chain Replication Implementation
+// ============================================================================
+
+type chainReplicationServer struct {
+	protobufStorage.UnimplementedChainReplicationServer
+	messageBoardServer *messageBoardServer
+}
+
+// replicateWrite sends a write operation to the next server with retry logic
+func (s *messageBoardServer) replicateWrite(ctx context.Context, req *protobufStorage.ReplicateWriteRequest) (*protobufStorage.ReplicateWriteAck, error) {
+	// If this is the tail server, acknowledge immediately
+	if s.nextServerChainClient == nil {
+		return &protobufStorage.ReplicateWriteAck{
+			SequenceNumber: req.SequenceNumber,
+			Success:        true,
+		}, nil
+	}
+
+	// Retry logic with exponential backoff: 3 attempts, 100ms → 200ms → 400ms
+	backoffDelays := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 400 * time.Millisecond}
+
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		// Call the next server in the chain
+		ack, err := s.nextServerChainClient.ReplicateWrite(ctx, req)
+		if err == nil {
+			return ack, nil
+		}
+
+		lastErr = err
+		log.Printf("Replication attempt %d failed for sequence %d: %v", attempt+1, req.SequenceNumber, err)
+
+		// Wait before retrying (except on last attempt)
+		if attempt < 2 {
+			time.Sleep(backoffDelays[attempt])
+		}
+	}
+
+	// All retries failed
+	return &protobufStorage.ReplicateWriteAck{
+		SequenceNumber: req.SequenceNumber,
+		Success:        false,
+		ErrorMessage:   fmt.Sprintf("replication failed after 3 attempts: %v", lastErr),
+	}, lastErr
+}
+
+// ReplicateWrite implements the ChainReplication service
+func (s *chainReplicationServer) ReplicateWrite(ctx context.Context, req *protobufStorage.ReplicateWriteRequest) (*protobufStorage.ReplicateWriteAck, error) {
+	log.Printf("Server received replicate write request: seq=%d, op=%v\n", req.SequenceNumber, req.Op)
+
+	// Forward to next server if not tail
+	ack, err := s.messageBoardServer.replicateWrite(ctx, req)
+	if err != nil {
+		return ack, err
+	}
+
+	// If downstream acknowledged, apply the operation locally
+	if ack.Success {
+		switch req.Op {
+		case protobufStorage.OpType_OP_POST:
+			if req.Message != nil {
+				// Apply the post operation
+				_, storeErr := s.messageBoardServer.store.AddMessage(req.Message.TopicId, req.Message.UserId, req.Message.Text)
+				if storeErr != nil {
+					return &protobufStorage.ReplicateWriteAck{
+						SequenceNumber: req.SequenceNumber,
+						Success:        false,
+						ErrorMessage:   fmt.Sprintf("failed to store message: %v", storeErr),
+					}, nil
+				}
+			}
+
+		case protobufStorage.OpType_OP_LIKE:
+			if req.Message != nil {
+				// Apply the like operation
+				_, storeErr := s.messageBoardServer.store.LikeMessage(req.Message.TopicId, req.Message.Id, req.Message.UserId)
+				if storeErr != nil {
+					return &protobufStorage.ReplicateWriteAck{
+						SequenceNumber: req.SequenceNumber,
+						Success:        false,
+						ErrorMessage:   fmt.Sprintf("failed to apply like: %v", storeErr),
+					}, nil
+				}
+			}
+
+		case protobufStorage.OpType_OP_CREATE_USER:
+			if req.Message != nil {
+				// Apply the create user operation
+				_, storeErr := s.messageBoardServer.store.AddUser(req.Message.Text)
+				if storeErr != nil {
+					return &protobufStorage.ReplicateWriteAck{
+						SequenceNumber: req.SequenceNumber,
+						Success:        false,
+						ErrorMessage:   fmt.Sprintf("failed to create user: %v", storeErr),
+					}, nil
+				}
+			}
+
+		case protobufStorage.OpType_OP_CREATE_TOPIC:
+			if req.Message != nil {
+				// Apply the create topic operation
+				_, storeErr := s.messageBoardServer.store.AddTopic(req.Message.Text)
+				if storeErr != nil {
+					return &protobufStorage.ReplicateWriteAck{
+						SequenceNumber: req.SequenceNumber,
+						Success:        false,
+						ErrorMessage:   fmt.Sprintf("failed to create topic: %v", storeErr),
+					}, nil
+				}
+			}
+		}
+	}
+
+	return ack, nil
 }
 
 // ============================================================================
@@ -132,9 +459,36 @@ func (s *messageBoardServer) CreateUser(ctx context.Context, req *protobufStorag
 		return nil, fmt.Errorf("user name cannot be empty")
 	}
 
+	// Only HEAD can receive write requests
+	if s.role != protobufStorage.ServerRole_HEAD {
+		return nil, fmt.Errorf("write operations only allowed on head server")
+	}
+
+	// Create the user locally
 	user, err := s.store.AddUser(req.Name)
 	if err != nil {
 		return nil, err
+	}
+
+	// Replicate the write through the chain
+	replicateReq := &protobufStorage.ReplicateWriteRequest{
+		SequenceNumber: user.ID, // Use user ID as sequence number
+		Op:             protobufStorage.OpType_OP_CREATE_USER,
+		Message: &protobufStorage.Message{
+			Id:   user.ID,
+			Text: user.Name, // Store user name in text field temporarily
+		},
+		Timestamp: timestamppb.Now(),
+	}
+
+	// Replicate to next server
+	ack, err := s.replicateWrite(ctx, replicateReq)
+	if err != nil || !ack.Success {
+		errMsg := fmt.Sprintf("replication failed: %v", err)
+		if ack != nil && ack.ErrorMessage != "" {
+			errMsg = ack.ErrorMessage
+		}
+		return nil, fmt.Errorf(errMsg)
 	}
 
 	return &protobufStorage.User{
@@ -164,9 +518,36 @@ func (s *messageBoardServer) CreateTopic(ctx context.Context, req *protobufStora
 		return nil, fmt.Errorf("topic name cannot be empty")
 	}
 
+	// Only HEAD can receive write requests
+	if s.role != protobufStorage.ServerRole_HEAD {
+		return nil, fmt.Errorf("write operations only allowed on head server")
+	}
+
+	// Create the topic locally
 	topic, err := s.store.AddTopic(req.Name)
 	if err != nil {
 		return nil, err
+	}
+
+	// Replicate the write through the chain
+	replicateReq := &protobufStorage.ReplicateWriteRequest{
+		SequenceNumber: topic.ID, // Use topic ID as sequence number
+		Op:             protobufStorage.OpType_OP_CREATE_TOPIC,
+		Message: &protobufStorage.Message{
+			Id:   topic.ID,
+			Text: topic.Name, // Store topic name in text field temporarily
+		},
+		Timestamp: timestamppb.Now(),
+	}
+
+	// Replicate to next server
+	ack, err := s.replicateWrite(ctx, replicateReq)
+	if err != nil || !ack.Success {
+		errMsg := fmt.Sprintf("replication failed: %v", err)
+		if ack != nil && ack.ErrorMessage != "" {
+			errMsg = ack.ErrorMessage
+		}
+		return nil, fmt.Errorf(errMsg)
 	}
 
 	return &protobufStorage.Topic{
@@ -204,11 +585,44 @@ func (s *messageBoardServer) PostMessage(ctx context.Context, req *protobufStora
 		return nil, fmt.Errorf("message text cannot be empty")
 	}
 
+	// Only HEAD can receive write requests
+	if s.role != protobufStorage.ServerRole_HEAD {
+		return nil, fmt.Errorf("write operations only allowed on head server")
+	}
+
+	// Create the message locally
 	message, err := s.store.AddMessage(req.TopicId, req.UserId, req.Text)
 	if err != nil {
 		return nil, err
 	}
 
+	// Replicate the write through the chain
+	replicateReq := &protobufStorage.ReplicateWriteRequest{
+		SequenceNumber: message.ID, // Use message ID as sequence number
+		Op:             protobufStorage.OpType_OP_POST,
+		Message: &protobufStorage.Message{
+			Id:        message.ID,
+			TopicId:   message.TopicID,
+			UserId:    message.UserID,
+			Text:      message.Text,
+			CreatedAt: message.CreatedAt,
+			Likes:     message.Likes,
+		},
+		Timestamp: message.CreatedAt,
+	}
+
+	// Replicate to next server
+	ack, err := s.replicateWrite(ctx, replicateReq)
+	if err != nil || !ack.Success {
+		errMsg := fmt.Sprintf("replication failed: %v", err)
+		if ack != nil && ack.ErrorMessage != "" {
+			errMsg = ack.ErrorMessage
+		}
+		// Don't return the message if replication failed
+		return nil, fmt.Errorf(errMsg)
+	}
+
+	// Return the message only after successful replication
 	return &protobufStorage.Message{
 		Id:        message.ID,
 		TopicId:   message.TopicID,
@@ -247,11 +661,43 @@ func (s *messageBoardServer) GetMessages(ctx context.Context, req *protobufStora
 // ============================================================================
 
 func (s *messageBoardServer) LikeMessage(ctx context.Context, req *protobufStorage.LikeMessageRequest) (*protobufStorage.Message, error) {
+	// Only HEAD can receive write requests
+	if s.role != protobufStorage.ServerRole_HEAD {
+		return nil, fmt.Errorf("write operations only allowed on head server")
+	}
+
 	message, err := s.store.LikeMessage(req.TopicId, req.MessageId, req.UserId)
 	if err != nil {
 		return nil, err
 	}
 
+	// Replicate the write through the chain
+	replicateReq := &protobufStorage.ReplicateWriteRequest{
+		SequenceNumber: req.MessageId, // Use message ID as sequence number
+		Op:             protobufStorage.OpType_OP_LIKE,
+		Message: &protobufStorage.Message{
+			Id:        message.ID,
+			TopicId:   message.TopicID,
+			UserId:    message.UserID,
+			Text:      message.Text,
+			CreatedAt: message.CreatedAt,
+			Likes:     message.Likes,
+		},
+		Timestamp: message.CreatedAt,
+	}
+
+	// Replicate to next server
+	ack, err := s.replicateWrite(ctx, replicateReq)
+	if err != nil || !ack.Success {
+		errMsg := fmt.Sprintf("replication failed: %v", err)
+		if ack != nil && ack.ErrorMessage != "" {
+			errMsg = ack.ErrorMessage
+		}
+		// Don't return the message if replication failed
+		return nil, fmt.Errorf(errMsg)
+	}
+
+	// Return the message only after successful replication
 	return &protobufStorage.Message{
 		Id:        message.ID,
 		TopicId:   message.TopicID,
@@ -267,19 +713,36 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *protobufStora
 // ============================================================================
 
 func (s *messageBoardServer) GetSubscriptionNode(ctx context.Context, req *protobufStorage.SubscriptionNodeRequest) (*protobufStorage.SubscriptionNodeResponse, error) {
-	// Registrira naročnino in vrne token
+	// Query control plane to get load-balanced subscription server
+	subscServer, err := s.controlPlaneClient.GetSubscriptionServer(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subscription server from control plane: %v", err)
+	}
+
+	// Register subscription on the assigned server
 	token, err := s.store.RegisterSubscription(req.UserId, req.TopicId)
 	if err != nil {
 		return nil, err
 	}
 
-	// Vrni informacije o vozlišču (to je isto vozlišče)
-	hostName, _ := os.Hostname()
+	// Report to control plane that subscription count increased on assigned server
+	go func() {
+		s.subscriptionCountMutex.Lock()
+		s.activeSubscriptionCount++
+		count := s.activeSubscriptionCount
+		s.subscriptionCountMutex.Unlock()
+
+		_, _ = s.controlPlaneClient.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
+			ServerAddress:       subscServer.Address,
+			ActiveSubscriptions: count,
+		})
+	}()
+
 	return &protobufStorage.SubscriptionNodeResponse{
 		SubscribeToken: token,
 		Node: &protobufStorage.NodeInfo{
-			NodeId:  hostName,
-			Address: "", // Odjemalec že pozna naslov
+			NodeId:  subscServer.Address,
+			Address: subscServer.Address,
 		},
 	}, nil
 }
@@ -292,6 +755,20 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 	}
 
 	log.Printf("Subscription started for user %d on topics %v\n", subscription.UserID, subscription.TopicIDs)
+
+	// Defer cleanup: decrement subscription count when subscription ends
+	defer func() {
+		s.subscriptionCountMutex.Lock()
+		s.activeSubscriptionCount--
+		count := s.activeSubscriptionCount
+		s.subscriptionCountMutex.Unlock()
+
+		_, _ = s.controlPlaneClient.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
+			ServerAddress:       s.serverAddress,
+			ActiveSubscriptions: count,
+		})
+		log.Printf("Subscription ended, decremented count to %d\n", count)
+	}()
 
 	// Pošlji zgodovino sporočil, ki so že na voljo
 	messages, err := s.store.GetMessagesInTopic(subscription.TopicIDs[0], req.FromMessageId, 100)

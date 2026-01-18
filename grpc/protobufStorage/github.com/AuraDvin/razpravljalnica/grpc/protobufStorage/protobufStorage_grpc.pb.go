@@ -4,7 +4,7 @@
 // - protoc             v6.33.2
 // source: protobufStorage.proto
 
-package __
+package protobufStorage
 
 import (
 	context "context"

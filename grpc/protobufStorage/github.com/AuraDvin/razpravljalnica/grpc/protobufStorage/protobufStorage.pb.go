@@ -4,7 +4,7 @@
 // 	protoc        v6.33.2
 // source: protobufStorage.proto
 
-package __
+package protobufStorage
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -1518,7 +1518,7 @@ const file_protobufStorage_proto_rawDesc = "" +
 	"\x15GetSubscriptionServer\x12\x16.google.protobuf.Empty\x1a\x1b.razpravljalnica.ServerInfo\x12P\n" +
 	"\x17ReportSubscriptionCount\x12\x1d.razpravljalnica.ServerStatus\x1a\x16.google.protobuf.Empty2p\n" +
 	"\x10ChainReplication\x12\\\n" +
-	"\x0eReplicateWrite\x12&.razpravljalnica.ReplicateWriteRequest\x1a\".razpravljalnica.ReplicateWriteAckB\x03Z\x01.b\x06proto3"
+	"\x0eReplicateWrite\x12&.razpravljalnica.ReplicateWriteRequest\x1a\".razpravljalnica.ReplicateWriteAckB:Z8github.com/AuraDvin/razpravljalnica/grpc/protobufStorageb\x06proto3"
 
 var (
 	file_protobufStorage_proto_rawDescOnce sync.Once
