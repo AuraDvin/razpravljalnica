@@ -7,7 +7,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/grpc",
-            "args": ["-p", "${input:port}"]
+            "args": ["-p", "${input:port}", "-n", "${input:nodesc}"]
         },
         
         {
@@ -33,6 +33,12 @@
             "type": "promptString",
             "description": "Enter the server port",
             "default": "9876"
+        },
+        {
+            "id": "nodesc" ,
+            "type": "promptString",
+            "description": "number of nodes to make",
+            "default": "3"
         }
     ]
     
