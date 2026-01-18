@@ -9,13 +9,72 @@ import (
 	"log"
 	"net"
 	"os"
+	"time"
 
 	"github.com/AuraDvin/razpravljalnica/grpc/protobufStorage"
 	"github.com/AuraDvin/razpravljalnica/storage"
-
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
+
+func StartServerChain(basePort int, numServers int) {
+	var servers []*grpc.Server
+
+	// Create all servers in the chain
+	for i := 0; i < numServers; i++ {
+		port := basePort + i
+		url := fmt.Sprintf("localhost:%d", port)
+
+		// Create gRPC server
+		grpcServer := grpc.NewServer()
+		servers = append(servers, grpcServer)
+
+		// Create message board server
+		mbs := NewMessageBoardServer()
+
+		// If not the last server, connect to the next one
+		if i < numServers-1 {
+			nextPort := basePort + i + 1
+			nextURL := fmt.Sprintf("localhost:%d", nextPort)
+			mbs.nextServerURL = nextURL
+		}
+
+		// Register the service
+		protobufStorage.RegisterMessageBoardServer(grpcServer, mbs)
+
+		// Start the server in a goroutine
+		go func(grpcServer *grpc.Server, url string, idx int, server *messageBoardServer) {
+			listener, err := net.Listen("tcp", url)
+			if err != nil {
+				log.Fatalf("failed to listen on %s: %v", url, err)
+			}
+			fmt.Printf("Server %d listening at %s\n", idx, url)
+
+			// If not the last server, connect to the next one after a short delay
+			if server.nextServerURL != "" {
+				go func() {
+					time.Sleep(100 * time.Millisecond)
+					conn, err := grpc.NewClient(server.nextServerURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+					if err != nil {
+						log.Printf("failed to connect to next server %s: %v", server.nextServerURL, err)
+						return
+					}
+					server.nextServerConn = conn
+					server.nextServerClient = protobufStorage.NewMessageBoardClient(conn)
+					fmt.Printf("Server %d connected to next server at %s\n", idx, server.nextServerURL)
+				}()
+			}
+
+			if err := grpcServer.Serve(listener); err != nil {
+				log.Fatalf("failed to serve on %s: %v", url, err)
+			}
+		}(grpcServer, url, i, mbs)
+	}
+
+	// Keep the program running
+	select {}
+}
 
 func Server(url string) {
 	// pripravimo strežnik gRPC
@@ -47,14 +106,20 @@ func Server(url string) {
 // struktura za strežnik MessageBoard
 type messageBoardServer struct {
 	protobufStorage.UnimplementedMessageBoardServer
-	store *storage.DatabaseStorage
+	store            *storage.DatabaseStorage
+	nextServerURL    string // URL of the next server in the chain (empty if last server)
+	nextServerConn   *grpc.ClientConn
+	nextServerClient protobufStorage.MessageBoardClient
 }
 
 // pripravimo nov strežnik MessageBoard
 func NewMessageBoardServer() *messageBoardServer {
 	return &messageBoardServer{
-		protobufStorage.UnimplementedMessageBoardServer{},
-		storage.NewDatabaseStorage(),
+		UnimplementedMessageBoardServer: protobufStorage.UnimplementedMessageBoardServer{},
+		store:                           storage.NewDatabaseStorage(),
+		nextServerURL:                   "",
+		nextServerConn:                  nil,
+		nextServerClient:                nil,
 	}
 }
 
@@ -127,6 +192,7 @@ func (s *messageBoardServer) ListTopics(ctx context.Context, _ *emptypb.Empty) (
 	return &protobufStorage.ListTopicsResponse{
 		Topics: pbTopics,
 	}, nil
+
 }
 
 // ============================================================================
@@ -213,7 +279,7 @@ func (s *messageBoardServer) GetSubscriptionNode(ctx context.Context, req *proto
 		SubscribeToken: token,
 		Node: &protobufStorage.NodeInfo{
 			NodeId:  hostName,
-			Address: "", // Odjemalec že zna naslov
+			Address: "", // Odjemalec že pozna naslov
 		},
 	}, nil
 }
@@ -249,37 +315,28 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 	}
 
 	// Počakaj na nove dogodke
-	for {
-		select {
-		case <-stream.Context().Done():
-			log.Printf("Client disconnected (unsubscribed)")
-			// close(channel)
-			return nil
-		case event, ok := <-channel:
-			if !ok {
-				// channel closed
-				return nil
-			}
-			pbEvent := &protobufStorage.MessageEvent{
-				SequenceNumber: event.SequenceNumber,
-				Op:             protobufStorage.OpType(event.Op),
-				Message: &protobufStorage.Message{
-					Id:        event.Message.ID,
-					TopicId:   event.Message.TopicID,
-					UserId:    event.Message.UserID,
-					Text:      event.Message.Text,
-					CreatedAt: event.Message.CreatedAt,
-					Likes:     event.Message.Likes,
-				},
-				EventAt: event.EventAt,
-			}
+	for event := range channel {
+		pbEvent := &protobufStorage.MessageEvent{
+			SequenceNumber: event.SequenceNumber,
+			Op:             protobufStorage.OpType(event.Op),
+			Message: &protobufStorage.Message{
+				Id:        event.Message.ID,
+				TopicId:   event.Message.TopicID,
+				UserId:    event.Message.UserID,
+				Text:      event.Message.Text,
+				CreatedAt: event.Message.CreatedAt,
+				Likes:     event.Message.Likes,
+			},
+			EventAt: event.EventAt,
+		}
 
-			if err := stream.Send(pbEvent); err != nil {
-				// Odjemalec je nepovezan
-				log.Printf("Error sending event to client: %v\n", err)
-				close(channel)
-				return nil
-			}
+		if err := stream.Send(pbEvent); err != nil {
+			// Odjemalec je nepovezan
+			log.Printf("Error sending event to client: %v\n", err)
+			close(channel)
+			break
 		}
 	}
+
+	return nil
 }
