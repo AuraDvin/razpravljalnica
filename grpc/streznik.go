@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -207,7 +208,20 @@ func (s *controlPlaneServer) GetSubscriptionNode(ctx context.Context, req *proto
 }
 
 func StartServerChain(basePort int, numServers int) {
-	// Initialize control plane
+	// Setup logging to file in logs directory
+	logFile, err := os.OpenFile("logs/server.log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to open log file: %v\n", err)
+		return
+	}
+	defer logFile.Close()
+
+	// Create a multi-writer that writes to both stdout and file
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	log.SetOutput(multiWriter)
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
+
+	log.Printf("New Session ================================\n")
 	initControlPlane()
 
 	// Start control plane server on a dedicated port (basePort - 1)
