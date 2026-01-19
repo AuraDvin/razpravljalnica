@@ -448,6 +448,7 @@ func runInteractiveClient(cpClient razpravljalnica.ControlPlaneClient) {
 		case "unsubscribe":
 			if subscriptionCancel != nil {
 				subscriptionCancel()
+				subscriptionCancel = nil
 				fmt.Println("Naročnina preklicana.")
 				if subscriptionConn != nil {
 					subscriptionConn.Close()
