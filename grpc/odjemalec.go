@@ -394,11 +394,6 @@ func runInteractiveClient(cpClient razpravljalnica.ControlPlaneClient) {
 			// Razčleni seznam tem (comma-separated)
 			topicIDStrs := strings.Split(parts[1], ",")
 			topicIDs := make([]int64, 0)
-			headClient, _, err := getHeadAndTailClients()
-			if err != nil {
-				fmt.Printf("Napaka pri povezovanju: %v\n", err)
-				continue
-			}
 			for _, idStr := range topicIDStrs {
 				id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 				if err != nil {
@@ -413,9 +408,9 @@ func runInteractiveClient(cpClient razpravljalnica.ControlPlaneClient) {
 				continue
 			}
 
-			// Dobi naročniško vozlišče in token
+			// Get subscription node from control plane (not head)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			subResp, err := headClient.GetSubscriptionNode(ctx, &razpravljalnica.SubscriptionNodeRequest{
+			subResp, err := cpClient.GetSubscriptionNode(ctx, &razpravljalnica.SubscriptionNodeRequest{
 				UserId:  currentUserID,
 				TopicId: topicIDs,
 			})
