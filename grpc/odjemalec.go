@@ -54,38 +54,12 @@ func Client(url string) {
 
 	fmt.Printf("Control plane returned head server at %s\n", headServerInfo.Address)
 
-	// Connect to head server for write operations
-	conn, err := grpc.NewClient(headServerInfo.Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		panic(err)
-	}
-	defer conn.Close()
-
-	// Create clients for head server (writes) and control plane (read routing)
-	grpcClient := razpravljalnica.NewMessageBoardClient(conn)
-
-	// Get tail server for read operations
-	clusterState, err := cpClient.GetClusterState(context.Background(), &emptypb.Empty{})
-	if err != nil {
-		panic(fmt.Sprintf("failed to get cluster state: %v", err))
-	}
-
-	fmt.Printf("Cluster state: Head=%s, Tail=%s\n", clusterState.Head.Address, clusterState.Tail.Address)
-
-	// Connect to tail server for read operations
-	tailConn, err := grpc.NewClient(clusterState.Tail.Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		panic(err)
-	}
-	defer tailConn.Close()
-
-	tailClient := razpravljalnica.NewMessageBoardClient(tailConn)
-
-	// Start interactive client with head (writes), tail (reads), and control plane
-	runInteractiveClient(grpcClient, tailClient, cpClient)
+	// Start interactive client with control plane
+	// Head and tail clients will be discovered for each operation
+	runInteractiveClient(cpClient)
 }
 
-func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailClient razpravljalnica.MessageBoardClient, cpClient razpravljalnica.ControlPlaneClient) {
+func runInteractiveClient(cpClient razpravljalnica.ControlPlaneClient) {
 	reader := bufio.NewReader(os.Stdin)
 	var currentUserID int64 = 0
 	var subscriptionToken string
@@ -93,6 +67,56 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 	var subscriptionConn *grpc.ClientConn
 	var subscriptionCtx context.Context
 	var subscriptionCancel context.CancelFunc
+
+	// Cache for current head/tail addresses and connections
+	var currentHeadAddr string
+	var currentTailAddr string
+	var headConn *grpc.ClientConn
+	var tailConn *grpc.ClientConn
+
+	// Helper function to get/refresh head and tail clients
+	getHeadAndTailClients := func() (razpravljalnica.MessageBoardClient, razpravljalnica.MessageBoardClient, error) {
+		// Get current cluster state
+		clusterState, err := cpClient.GetClusterState(context.Background(), &emptypb.Empty{})
+		if err != nil {
+			return nil, nil, fmt.Errorf("failed to get cluster state: %v", err)
+		}
+
+		newHeadAddr := clusterState.Head.Address
+		newTailAddr := clusterState.Tail.Address
+
+		// Check if head changed
+		if newHeadAddr != currentHeadAddr {
+			if headConn != nil {
+				headConn.Close()
+			}
+			var err error
+			headConn, err = grpc.NewClient(newHeadAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to connect to head server %s: %v", newHeadAddr, err)
+			}
+			currentHeadAddr = newHeadAddr
+			fmt.Printf("[Updated] Head server: %s\n", newHeadAddr)
+		}
+
+		// Check if tail changed
+		if newTailAddr != currentTailAddr {
+			if tailConn != nil {
+				tailConn.Close()
+			}
+			var err error
+			tailConn, err = grpc.NewClient(newTailAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+			if err != nil {
+				return nil, nil, fmt.Errorf("failed to connect to tail server %s: %v", newTailAddr, err)
+			}
+			currentTailAddr = newTailAddr
+			fmt.Printf("[Updated] Tail server: %s\n", newTailAddr)
+		}
+
+		headClient := razpravljalnica.NewMessageBoardClient(headConn)
+		tailClient := razpravljalnica.NewMessageBoardClient(tailConn)
+		return headClient, tailClient, nil
+	}
 
 	fmt.Println("\n=== Razpravljalnica - Odjemalec ===")
 	fmt.Println("Ukazi:")
@@ -126,12 +150,26 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 			if subscriptionCancel != nil {
 				subscriptionCancel()
 			}
+			if subscriptionConn != nil {
+				subscriptionConn.Close()
+			}
+			if headConn != nil {
+				headConn.Close()
+			}
+			if tailConn != nil {
+				tailConn.Close()
+			}
 			fmt.Println("Izhod...")
 			return
 
 		case "createuser":
 			if len(parts) < 2 {
 				fmt.Println("Napaka: createuser <ime>")
+				continue
+			}
+			headClient, _, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
 				continue
 			}
 			name := strings.Join(parts[1:], " ")
@@ -145,6 +183,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 			}
 
 		case "createtopic":
+			headClient, _, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
+				continue
+			}
 			if len(parts) < 2 {
 				fmt.Println("Napaka: createtopic <ime>")
 				continue
@@ -160,6 +203,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 			}
 
 		case "listtopics":
+			_, tailClient, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
+				continue
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			resp, err := tailClient.ListTopics(ctx, &emptypb.Empty{})
 			cancel()
@@ -194,6 +242,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 				fmt.Println("Napaka: getuser <id>")
 				continue
 			}
+			_, tailClient, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
+				continue
+			}
 			id, err := strconv.ParseInt(parts[1], 10, 64)
 			if err != nil {
 				fmt.Println("Napaka: Neveljavna ID")
@@ -211,6 +264,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 		case "postmessage":
 			if len(parts) < 3 {
 				fmt.Println("Napaka: postmessage <topic_id> <besedilo>")
+				continue
+			}
+			headClient, _, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
 				continue
 			}
 			topicID, err := strconv.ParseInt(parts[1], 10, 64)
@@ -239,6 +297,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 		case "getmessages":
 			if len(parts) < 2 {
 				fmt.Println("Napaka: getmessages <topic_id> [from_id] [limit]")
+				continue
+			}
+			_, tailClient, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
 				continue
 			}
 			topicID, err := strconv.ParseInt(parts[1], 10, 64)
@@ -286,6 +349,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 				fmt.Println("Napaka: likemessage <topic_id> <msg_id>")
 				continue
 			}
+			headClient, _, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
+				continue
+			}
 			topicID, err := strconv.ParseInt(parts[1], 10, 64)
 			if err != nil {
 				fmt.Println("Napaka: Neveljavna tema ID")
@@ -326,6 +394,11 @@ func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailCli
 			// Razčleni seznam tem (comma-separated)
 			topicIDStrs := strings.Split(parts[1], ",")
 			topicIDs := make([]int64, 0)
+			headClient, _, err := getHeadAndTailClients()
+			if err != nil {
+				fmt.Printf("Napaka pri povezovanju: %v\n", err)
+				continue
+			}
 			for _, idStr := range topicIDStrs {
 				id, err := strconv.ParseInt(strings.TrimSpace(idStr), 10, 64)
 				if err != nil {
