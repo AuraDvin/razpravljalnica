@@ -843,6 +843,18 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 
 	log.Printf("Subscription started for user %d on topics %v\n", subscription.UserID, subscription.TopicIDs)
 
+	// Increment subscription count when subscription starts
+	s.subscriptionCountMutex.Lock()
+	s.activeSubscriptionCount++
+	count := s.activeSubscriptionCount
+	s.subscriptionCountMutex.Unlock()
+
+	_, _ = s.controlPlaneClient.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
+		ServerAddress:       s.serverAddress,
+		ActiveSubscriptions: count,
+	})
+	log.Printf("Subscription started, incremented count to %d\n", count)
+
 	// Defer cleanup: decrement subscription count when subscription ends
 	defer func() {
 		s.subscriptionCountMutex.Lock()
@@ -850,10 +862,16 @@ func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicR
 		count := s.activeSubscriptionCount
 		s.subscriptionCountMutex.Unlock()
 
-		_, _ = s.controlPlaneClient.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
-			ServerAddress:       s.serverAddress,
-			ActiveSubscriptions: count,
-		})
+		// Report with timeout to avoid blocking or context issues
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		if s.controlPlaneClient != nil {
+			_, _ = s.controlPlaneClient.ReportSubscriptionCount(ctx, &protobufStorage.ServerStatus{
+				ServerAddress:       s.serverAddress,
+				ActiveSubscriptions: count,
+			})
+		}
 		log.Printf("Subscription ended, decremented count to %d\n", count)
 	}()
 
