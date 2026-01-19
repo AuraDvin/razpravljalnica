@@ -9,7 +9,7 @@ func main() {
 	// preberemo argumente iz ukazne vrstice
 	sPtr := flag.String("s", "", "server URL")
 	pPtr := flag.Int("p", 9876, "port number")
-	numServers := flag.Int("n", 1, "number of servers in the chain")
+	numServers := flag.Int("n", 3, "number of servers in the chain")
 	flag.Parse()
 
 	// zaženemo strežnik ali odjemalca
