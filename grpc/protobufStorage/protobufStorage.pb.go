@@ -4,7 +4,7 @@
 // 	protoc        v6.33.2
 // source: protobufStorage.proto
 
-package __
+package protobufStorage
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -1498,27 +1498,27 @@ const file_protobufStorage_proto_rawDesc = "" +
 	"\x04HEAD\x10\x00\x12\n" +
 	"\n" +
 	"\x06MIDDLE\x10\x01\x12\b\n" +
-	"\x04TAIL\x10\x022\xee\x05\n" +
+	"\x04TAIL\x10\x022\x82\x05\n" +
 	"\fMessageBoard\x12G\n" +
 	"\n" +
 	"CreateUser\x12\".razpravljalnica.CreateUserRequest\x1a\x15.razpravljalnica.User\x12J\n" +
 	"\vCreateTopic\x12#.razpravljalnica.CreateTopicRequest\x1a\x16.razpravljalnica.Topic\x12L\n" +
 	"\vPostMessage\x12#.razpravljalnica.PostMessageRequest\x1a\x18.razpravljalnica.Message\x12L\n" +
-	"\vLikeMessage\x12#.razpravljalnica.LikeMessageRequest\x1a\x18.razpravljalnica.Message\x12j\n" +
-	"\x13GetSubscriptionNode\x12(.razpravljalnica.SubscriptionNodeRequest\x1a).razpravljalnica.SubscriptionNodeResponse\x12A\n" +
+	"\vLikeMessage\x12#.razpravljalnica.LikeMessageRequest\x1a\x18.razpravljalnica.Message\x12A\n" +
 	"\aGetUser\x12\x1f.razpravljalnica.GetUserRequest\x1a\x15.razpravljalnica.User\x12I\n" +
 	"\n" +
 	"ListTopics\x12\x16.google.protobuf.Empty\x1a#.razpravljalnica.ListTopicsResponse\x12X\n" +
 	"\vGetMessages\x12#.razpravljalnica.GetMessagesRequest\x1a$.razpravljalnica.GetMessagesResponse\x12Y\n" +
-	"\x0eSubscribeTopic\x12&.razpravljalnica.SubscribeTopicRequest\x1a\x1d.razpravljalnica.MessageEvent0\x012\x98\x03\n" +
+	"\x0eSubscribeTopic\x12&.razpravljalnica.SubscribeTopicRequest\x1a\x1d.razpravljalnica.MessageEvent0\x012\x84\x04\n" +
 	"\fControlPlane\x12S\n" +
 	"\x0fGetClusterState\x12\x16.google.protobuf.Empty\x1a(.razpravljalnica.GetClusterStateResponse\x12M\n" +
 	"\x0eRegisterServer\x12#.razpravljalnica.ServerRegistration\x1a\x16.google.protobuf.Empty\x12D\n" +
 	"\rGetHeadServer\x12\x16.google.protobuf.Empty\x1a\x1b.razpravljalnica.ServerInfo\x12L\n" +
 	"\x15GetSubscriptionServer\x12\x16.google.protobuf.Empty\x1a\x1b.razpravljalnica.ServerInfo\x12P\n" +
-	"\x17ReportSubscriptionCount\x12\x1d.razpravljalnica.ServerStatus\x1a\x16.google.protobuf.Empty2p\n" +
+	"\x17ReportSubscriptionCount\x12\x1d.razpravljalnica.ServerStatus\x1a\x16.google.protobuf.Empty\x12j\n" +
+	"\x13GetSubscriptionNode\x12(.razpravljalnica.SubscriptionNodeRequest\x1a).razpravljalnica.SubscriptionNodeResponse2p\n" +
 	"\x10ChainReplication\x12\\\n" +
-	"\x0eReplicateWrite\x12&.razpravljalnica.ReplicateWriteRequest\x1a\".razpravljalnica.ReplicateWriteAckB\x03Z\x01.b\x06proto3"
+	"\x0eReplicateWrite\x12&.razpravljalnica.ReplicateWriteRequest\x1a\".razpravljalnica.ReplicateWriteAckB:Z8github.com/AuraDvin/razpravljalnica/grpc/protobufStorageb\x06proto3"
 
 var (
 	file_protobufStorage_proto_rawDescOnce sync.Once
@@ -1582,31 +1582,31 @@ var file_protobufStorage_proto_depIdxs = []int32{
 	8,  // 15: razpravljalnica.MessageBoard.CreateTopic:input_type -> razpravljalnica.CreateTopicRequest
 	9,  // 16: razpravljalnica.MessageBoard.PostMessage:input_type -> razpravljalnica.PostMessageRequest
 	10, // 17: razpravljalnica.MessageBoard.LikeMessage:input_type -> razpravljalnica.LikeMessageRequest
-	15, // 18: razpravljalnica.MessageBoard.GetSubscriptionNode:input_type -> razpravljalnica.SubscriptionNodeRequest
-	18, // 19: razpravljalnica.MessageBoard.GetUser:input_type -> razpravljalnica.GetUserRequest
-	26, // 20: razpravljalnica.MessageBoard.ListTopics:input_type -> google.protobuf.Empty
-	12, // 21: razpravljalnica.MessageBoard.GetMessages:input_type -> razpravljalnica.GetMessagesRequest
-	14, // 22: razpravljalnica.MessageBoard.SubscribeTopic:input_type -> razpravljalnica.SubscribeTopicRequest
-	26, // 23: razpravljalnica.ControlPlane.GetClusterState:input_type -> google.protobuf.Empty
-	21, // 24: razpravljalnica.ControlPlane.RegisterServer:input_type -> razpravljalnica.ServerRegistration
-	26, // 25: razpravljalnica.ControlPlane.GetHeadServer:input_type -> google.protobuf.Empty
-	26, // 26: razpravljalnica.ControlPlane.GetSubscriptionServer:input_type -> google.protobuf.Empty
-	22, // 27: razpravljalnica.ControlPlane.ReportSubscriptionCount:input_type -> razpravljalnica.ServerStatus
+	18, // 18: razpravljalnica.MessageBoard.GetUser:input_type -> razpravljalnica.GetUserRequest
+	26, // 19: razpravljalnica.MessageBoard.ListTopics:input_type -> google.protobuf.Empty
+	12, // 20: razpravljalnica.MessageBoard.GetMessages:input_type -> razpravljalnica.GetMessagesRequest
+	14, // 21: razpravljalnica.MessageBoard.SubscribeTopic:input_type -> razpravljalnica.SubscribeTopicRequest
+	26, // 22: razpravljalnica.ControlPlane.GetClusterState:input_type -> google.protobuf.Empty
+	21, // 23: razpravljalnica.ControlPlane.RegisterServer:input_type -> razpravljalnica.ServerRegistration
+	26, // 24: razpravljalnica.ControlPlane.GetHeadServer:input_type -> google.protobuf.Empty
+	26, // 25: razpravljalnica.ControlPlane.GetSubscriptionServer:input_type -> google.protobuf.Empty
+	22, // 26: razpravljalnica.ControlPlane.ReportSubscriptionCount:input_type -> razpravljalnica.ServerStatus
+	15, // 27: razpravljalnica.ControlPlane.GetSubscriptionNode:input_type -> razpravljalnica.SubscriptionNodeRequest
 	19, // 28: razpravljalnica.ChainReplication.ReplicateWrite:input_type -> razpravljalnica.ReplicateWriteRequest
 	2,  // 29: razpravljalnica.MessageBoard.CreateUser:output_type -> razpravljalnica.User
 	3,  // 30: razpravljalnica.MessageBoard.CreateTopic:output_type -> razpravljalnica.Topic
 	4,  // 31: razpravljalnica.MessageBoard.PostMessage:output_type -> razpravljalnica.Message
 	4,  // 32: razpravljalnica.MessageBoard.LikeMessage:output_type -> razpravljalnica.Message
-	16, // 33: razpravljalnica.MessageBoard.GetSubscriptionNode:output_type -> razpravljalnica.SubscriptionNodeResponse
-	2,  // 34: razpravljalnica.MessageBoard.GetUser:output_type -> razpravljalnica.User
-	11, // 35: razpravljalnica.MessageBoard.ListTopics:output_type -> razpravljalnica.ListTopicsResponse
-	13, // 36: razpravljalnica.MessageBoard.GetMessages:output_type -> razpravljalnica.GetMessagesResponse
-	17, // 37: razpravljalnica.MessageBoard.SubscribeTopic:output_type -> razpravljalnica.MessageEvent
-	24, // 38: razpravljalnica.ControlPlane.GetClusterState:output_type -> razpravljalnica.GetClusterStateResponse
-	26, // 39: razpravljalnica.ControlPlane.RegisterServer:output_type -> google.protobuf.Empty
-	23, // 40: razpravljalnica.ControlPlane.GetHeadServer:output_type -> razpravljalnica.ServerInfo
-	23, // 41: razpravljalnica.ControlPlane.GetSubscriptionServer:output_type -> razpravljalnica.ServerInfo
-	26, // 42: razpravljalnica.ControlPlane.ReportSubscriptionCount:output_type -> google.protobuf.Empty
+	2,  // 33: razpravljalnica.MessageBoard.GetUser:output_type -> razpravljalnica.User
+	11, // 34: razpravljalnica.MessageBoard.ListTopics:output_type -> razpravljalnica.ListTopicsResponse
+	13, // 35: razpravljalnica.MessageBoard.GetMessages:output_type -> razpravljalnica.GetMessagesResponse
+	17, // 36: razpravljalnica.MessageBoard.SubscribeTopic:output_type -> razpravljalnica.MessageEvent
+	24, // 37: razpravljalnica.ControlPlane.GetClusterState:output_type -> razpravljalnica.GetClusterStateResponse
+	26, // 38: razpravljalnica.ControlPlane.RegisterServer:output_type -> google.protobuf.Empty
+	23, // 39: razpravljalnica.ControlPlane.GetHeadServer:output_type -> razpravljalnica.ServerInfo
+	23, // 40: razpravljalnica.ControlPlane.GetSubscriptionServer:output_type -> razpravljalnica.ServerInfo
+	26, // 41: razpravljalnica.ControlPlane.ReportSubscriptionCount:output_type -> google.protobuf.Empty
+	16, // 42: razpravljalnica.ControlPlane.GetSubscriptionNode:output_type -> razpravljalnica.SubscriptionNodeResponse
 	20, // 43: razpravljalnica.ChainReplication.ReplicateWrite:output_type -> razpravljalnica.ReplicateWriteAck
 	29, // [29:44] is the sub-list for method output_type
 	14, // [14:29] is the sub-list for method input_type

@@ -137,6 +137,7 @@ func (s *controlPlaneServer) ReportSubscriptionCount(ctx context.Context, req *p
 // Control plane server implementation
 type controlPlaneServer struct {
 	protobufStorage.UnimplementedControlPlaneServer
+	headServer *messageBoardServer // Reference to the head server for subscription registration
 }
 
 func (s *controlPlaneServer) GetClusterState(ctx context.Context, _ *emptypb.Empty) (*protobufStorage.GetClusterStateResponse, error) {
@@ -161,6 +162,48 @@ func (s *controlPlaneServer) GetClusterState(ctx context.Context, _ *emptypb.Emp
 	}
 
 	return resp, nil
+}
+
+func (s *controlPlaneServer) GetSubscriptionNode(ctx context.Context, req *protobufStorage.SubscriptionNodeRequest) (*protobufStorage.SubscriptionNodeResponse, error) {
+	if s.headServer == nil {
+		return nil, fmt.Errorf("head server not initialized")
+	}
+
+	// Get load-balanced subscription server from control plane
+	subsServer, err := s.GetSubscriptionServer(ctx, &emptypb.Empty{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get subscription server: %v", err)
+	}
+
+	// Register subscription on the head server's store
+	token, err := s.headServer.store.RegisterSubscription(req.UserId, req.TopicId)
+	if err != nil {
+		return nil, err
+	}
+
+	// Report subscription count to the assigned subscription server
+	go func() {
+		subsNode := serverRegistry[subsServer.Address]
+		if subsNode != nil {
+			cpMutex.Lock()
+			subsNode.ActiveSubscriptions++
+			count := subsNode.ActiveSubscriptions
+			cpMutex.Unlock()
+
+			_, _ = s.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
+				ServerAddress:       subsServer.Address,
+				ActiveSubscriptions: count,
+			})
+		}
+	}()
+
+	return &protobufStorage.SubscriptionNodeResponse{
+		SubscribeToken: token,
+		Node: &protobufStorage.NodeInfo{
+			NodeId:  subsServer.Address,
+			Address: subsServer.Address,
+		},
+	}, nil
 }
 
 func StartServerChain(basePort int, numServers int) {
@@ -205,6 +248,8 @@ func StartServerChain(basePort int, numServers int) {
 		// Determine role based on position
 		if i == 0 {
 			mbs.role = protobufStorage.ServerRole_HEAD
+			// Set the head server reference on control plane
+			cpServer.headServer = mbs
 		} else if i == numServers-1 {
 			mbs.role = protobufStorage.ServerRole_TAIL
 		} else {
@@ -711,41 +756,6 @@ func (s *messageBoardServer) LikeMessage(ctx context.Context, req *protobufStora
 // ============================================================================
 // Subscription operations
 // ============================================================================
-
-func (s *messageBoardServer) GetSubscriptionNode(ctx context.Context, req *protobufStorage.SubscriptionNodeRequest) (*protobufStorage.SubscriptionNodeResponse, error) {
-	// Query control plane to get load-balanced subscription server
-	subscServer, err := s.controlPlaneClient.GetSubscriptionServer(ctx, &emptypb.Empty{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to get subscription server from control plane: %v", err)
-	}
-
-	// Register subscription on the assigned server
-	token, err := s.store.RegisterSubscription(req.UserId, req.TopicId)
-	if err != nil {
-		return nil, err
-	}
-
-	// Report to control plane that subscription count increased on assigned server
-	go func() {
-		s.subscriptionCountMutex.Lock()
-		s.activeSubscriptionCount++
-		count := s.activeSubscriptionCount
-		s.subscriptionCountMutex.Unlock()
-
-		_, _ = s.controlPlaneClient.ReportSubscriptionCount(context.Background(), &protobufStorage.ServerStatus{
-			ServerAddress:       subscServer.Address,
-			ActiveSubscriptions: count,
-		})
-	}()
-
-	return &protobufStorage.SubscriptionNodeResponse{
-		SubscribeToken: token,
-		Node: &protobufStorage.NodeInfo{
-			NodeId:  subscServer.Address,
-			Address: subscServer.Address,
-		},
-	}, nil
-}
 
 func (s *messageBoardServer) SubscribeTopic(req *protobufStorage.SubscribeTopicRequest, stream protobufStorage.MessageBoard_SubscribeTopicServer) error {
 	// Dobi kanal za naročnino

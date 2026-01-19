@@ -129,9 +129,6 @@ service MessageBoard {
   // Like an existing message. Return the message with the new number of likes.
   rpc LikeMessage(LikeMessageRequest) returns (Message);
 
-  // Request a node to which a subscription can be opened.
-  rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
-
   // Reads go to the tail node
 
   // Get user by ID
@@ -208,6 +205,9 @@ service ControlPlane {
   
   // Report subscription count from a server
   rpc ReportSubscriptionCount(ServerStatus) returns (google.protobuf.Empty);
+  
+  // Get a subscription node with token for subscribing to topics
+  rpc GetSubscriptionNode(SubscriptionNodeRequest) returns (SubscriptionNodeResponse);
 }
 
 message GetClusterStateResponse {
