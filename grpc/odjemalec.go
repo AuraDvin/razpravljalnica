@@ -64,11 +64,28 @@ func Client(url string) {
 	// Create clients for head server (writes) and control plane (read routing)
 	grpcClient := razpravljalnica.NewMessageBoardClient(conn)
 
-	// Start interactive client with both clients
-	runInteractiveClient(grpcClient, cpClient)
+	// Get tail server for read operations
+	clusterState, err := cpClient.GetClusterState(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to get cluster state: %v", err))
+	}
+
+	fmt.Printf("Cluster state: Head=%s, Tail=%s\n", clusterState.Head.Address, clusterState.Tail.Address)
+
+	// Connect to tail server for read operations
+	tailConn, err := grpc.NewClient(clusterState.Tail.Address, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		panic(err)
+	}
+	defer tailConn.Close()
+
+	tailClient := razpravljalnica.NewMessageBoardClient(tailConn)
+
+	// Start interactive client with head (writes), tail (reads), and control plane
+	runInteractiveClient(grpcClient, tailClient, cpClient)
 }
 
-func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient razpravljalnica.ControlPlaneClient) {
+func runInteractiveClient(headClient razpravljalnica.MessageBoardClient, tailClient razpravljalnica.MessageBoardClient, cpClient razpravljalnica.ControlPlaneClient) {
 	reader := bufio.NewReader(os.Stdin)
 	var currentUserID int64 = 0
 	var subscriptionToken string
@@ -119,7 +136,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 			}
 			name := strings.Join(parts[1:], " ")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			user, err := client.CreateUser(ctx, &razpravljalnica.CreateUserRequest{Name: name})
+			user, err := headClient.CreateUser(ctx, &razpravljalnica.CreateUserRequest{Name: name})
 			cancel()
 			if err != nil {
 				fmt.Printf("Napaka: %v\n", err)
@@ -134,7 +151,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 			}
 			name := strings.Join(parts[1:], " ")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			topic, err := client.CreateTopic(ctx, &razpravljalnica.CreateTopicRequest{Name: name})
+			topic, err := headClient.CreateTopic(ctx, &razpravljalnica.CreateTopicRequest{Name: name})
 			cancel()
 			if err != nil {
 				fmt.Printf("Napaka: %v\n", err)
@@ -144,7 +161,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 
 		case "listtopics":
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			resp, err := client.ListTopics(ctx, &emptypb.Empty{})
+			resp, err := tailClient.ListTopics(ctx, &emptypb.Empty{})
 			cancel()
 			if err != nil {
 				fmt.Printf("Napaka: %v\n", err)
@@ -183,7 +200,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			user, err := client.GetUser(ctx, &razpravljalnica.GetUserRequest{Id: id})
+			user, err := tailClient.GetUser(ctx, &razpravljalnica.GetUserRequest{Id: id})
 			cancel()
 			if err != nil {
 				fmt.Printf("Napaka: %v\n", err)
@@ -207,7 +224,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 			}
 			text := strings.Join(parts[2:], " ")
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			msg, err := client.PostMessage(ctx, &razpravljalnica.PostMessageRequest{
+			msg, err := headClient.PostMessage(ctx, &razpravljalnica.PostMessageRequest{
 				TopicId: topicID,
 				UserId:  currentUserID,
 				Text:    text,
@@ -244,7 +261,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 				}
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			resp, err := client.GetMessages(ctx, &razpravljalnica.GetMessagesRequest{
+			resp, err := tailClient.GetMessages(ctx, &razpravljalnica.GetMessagesRequest{
 				TopicId:       topicID,
 				FromMessageId: fromID,
 				Limit:         limit,
@@ -284,7 +301,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 				continue
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			msg, err := client.LikeMessage(ctx, &razpravljalnica.LikeMessageRequest{
+			msg, err := headClient.LikeMessage(ctx, &razpravljalnica.LikeMessageRequest{
 				TopicId:   topicID,
 				MessageId: msgID,
 				UserId:    currentUserID,
@@ -325,7 +342,7 @@ func runInteractiveClient(client razpravljalnica.MessageBoardClient, cpClient ra
 
 			// Dobi naročniško vozlišče in token
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			subResp, err := client.GetSubscriptionNode(ctx, &razpravljalnica.SubscriptionNodeRequest{
+			subResp, err := headClient.GetSubscriptionNode(ctx, &razpravljalnica.SubscriptionNodeRequest{
 				UserId:  currentUserID,
 				TopicId: topicIDs,
 			})
