@@ -16,7 +16,7 @@ go run ./grpc/
 go run ./grpc/ -s localhost
 ```
 ### Grajenje izvršile datoteke
-```go
+```bash
 go build -o ./out/razpravljalnica ./grpc 
 cd out
 mkdir -p logs
@@ -41,13 +41,13 @@ Lahko tudi uporabite `.vscode/launch.json` da zaženete Strežnik in nato Odjema
    2. setuser <id>                             - Nastavi trenutnega uporabnika
    3. getuser <id>                             - Dobi uporabniške informacije
    4. createtopic <ime>                        - Ustvari novo temo
-   5. listtopics                                - Seznam vseh tem
-   6. postmessage <topic_id> <besedilo>       - Objavi sporočilo
+   5. listtopics                               - Seznam vseh tem
+   6. postmessage <topic_id> <besedilo>        - Objavi sporočilo
    7. getmessages <topic_id> [from_id[limit]]  - Prejmi sporočila
-   8. likemessage <topic_id> <msg_id>         - Všečkaj sporočilo
-   9. subscribe <topic_id>[,<topic_id>]       - Naroči se na teme (seznam z vejicami)
-  10. unsubscribe                               - Prekini vse naročnine
-  11. exit                                      - Izhod
+   8. likemessage <topic_id> <msg_id>          - Všečkaj sporočilo
+   9. subscribe <topic_id>[,<topic_id>]        - Naroči se na teme (seznam z vejicami)
+  10. unsubscribe                              - Prekini vse naročnine
+  11. exit                                     - Izhod
   ```
 # Uporaba aplikacije 
 Začnemo z ustvarjenjem novega uporabnika.
