@@ -405,6 +405,7 @@ type chainReplicationServer struct {
 func (s *messageBoardServer) replicateWrite(ctx context.Context, req *protobufStorage.ReplicateWriteRequest) (*protobufStorage.ReplicateWriteAck, error) {
 	// If this is the tail server, acknowledge immediately
 	if s.nextServerChainClient == nil {
+		log.Printf("[%s] Tail server confirming sequence %d (op=%v)\n", s.serverAddress, req.SequenceNumber, req.Op)
 		return &protobufStorage.ReplicateWriteAck{
 			SequenceNumber: req.SequenceNumber,
 			Success:        true,
@@ -417,13 +418,19 @@ func (s *messageBoardServer) replicateWrite(ctx context.Context, req *protobufSt
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		// Call the next server in the chain
+		log.Printf("[%s] Forwarding sequence %d to next server (attempt %d/3)\n", s.serverAddress, req.SequenceNumber, attempt+1)
 		ack, err := s.nextServerChainClient.ReplicateWrite(ctx, req)
 		if err == nil {
+			if ack.Success {
+				log.Printf("[%s] Received ACK for sequence %d from next server\n", s.serverAddress, req.SequenceNumber)
+			} else {
+				log.Printf("[%s] Received NACK for sequence %d from next server: %s\n", s.serverAddress, req.SequenceNumber, ack.ErrorMessage)
+			}
 			return ack, nil
 		}
 
 		lastErr = err
-		log.Printf("Replication attempt %d failed for sequence %d: %v", attempt+1, req.SequenceNumber, err)
+		log.Printf("[%s] Replication attempt %d failed for sequence %d: %v\n", s.serverAddress, attempt+1, req.SequenceNumber, err)
 
 		// Wait before retrying (except on last attempt)
 		if attempt < 2 {
@@ -432,6 +439,7 @@ func (s *messageBoardServer) replicateWrite(ctx context.Context, req *protobufSt
 	}
 
 	// All retries failed
+	log.Printf("[%s] All replication attempts failed for sequence %d\n", s.serverAddress, req.SequenceNumber)
 	return &protobufStorage.ReplicateWriteAck{
 		SequenceNumber: req.SequenceNumber,
 		Success:        false,
@@ -441,28 +449,32 @@ func (s *messageBoardServer) replicateWrite(ctx context.Context, req *protobufSt
 
 // ReplicateWrite implements the ChainReplication service
 func (s *chainReplicationServer) ReplicateWrite(ctx context.Context, req *protobufStorage.ReplicateWriteRequest) (*protobufStorage.ReplicateWriteAck, error) {
-	log.Printf("Server received replicate write request: seq=%d, op=%v\n", req.SequenceNumber, req.Op)
+	log.Printf("[%s] Received replication request: seq=%d, op=%v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, req.Op)
 
 	// Forward to next server if not tail
 	ack, err := s.messageBoardServer.replicateWrite(ctx, req)
 	if err != nil {
+		log.Printf("[%s] Error during replication for seq=%d: %v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, err)
 		return ack, err
 	}
 
 	// If downstream acknowledged, apply the operation locally
 	if ack.Success {
+		log.Printf("[%s] Applying operation locally for seq=%d\n", s.messageBoardServer.serverAddress, req.SequenceNumber)
 		switch req.Op {
 		case protobufStorage.OpType_OP_POST:
 			if req.Message != nil {
 				// Apply the post operation
 				_, storeErr := s.messageBoardServer.store.AddMessage(req.Message.TopicId, req.Message.UserId, req.Message.Text)
 				if storeErr != nil {
+					log.Printf("[%s] Failed to store message for seq=%d: %v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, storeErr)
 					return &protobufStorage.ReplicateWriteAck{
 						SequenceNumber: req.SequenceNumber,
 						Success:        false,
 						ErrorMessage:   fmt.Sprintf("failed to store message: %v", storeErr),
 					}, nil
 				}
+				log.Printf("[%s] Successfully stored message for seq=%d\n", s.messageBoardServer.serverAddress, req.SequenceNumber)
 			}
 
 		case protobufStorage.OpType_OP_LIKE:
@@ -470,12 +482,14 @@ func (s *chainReplicationServer) ReplicateWrite(ctx context.Context, req *protob
 				// Apply the like operation
 				_, storeErr := s.messageBoardServer.store.LikeMessage(req.Message.TopicId, req.Message.Id, req.Message.UserId)
 				if storeErr != nil {
+					log.Printf("[%s] Failed to apply like for seq=%d: %v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, storeErr)
 					return &protobufStorage.ReplicateWriteAck{
 						SequenceNumber: req.SequenceNumber,
 						Success:        false,
 						ErrorMessage:   fmt.Sprintf("failed to apply like: %v", storeErr),
 					}, nil
 				}
+				log.Printf("[%s] Successfully applied like for seq=%d\n", s.messageBoardServer.serverAddress, req.SequenceNumber)
 			}
 
 		case protobufStorage.OpType_OP_CREATE_USER:
@@ -483,12 +497,14 @@ func (s *chainReplicationServer) ReplicateWrite(ctx context.Context, req *protob
 				// Apply the create user operation
 				_, storeErr := s.messageBoardServer.store.AddUser(req.Message.Text)
 				if storeErr != nil {
+					log.Printf("[%s] Failed to create user for seq=%d: %v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, storeErr)
 					return &protobufStorage.ReplicateWriteAck{
 						SequenceNumber: req.SequenceNumber,
 						Success:        false,
 						ErrorMessage:   fmt.Sprintf("failed to create user: %v", storeErr),
 					}, nil
 				}
+				log.Printf("[%s] Successfully created user for seq=%d\n", s.messageBoardServer.serverAddress, req.SequenceNumber)
 			}
 
 		case protobufStorage.OpType_OP_CREATE_TOPIC:
@@ -496,16 +512,21 @@ func (s *chainReplicationServer) ReplicateWrite(ctx context.Context, req *protob
 				// Apply the create topic operation
 				_, storeErr := s.messageBoardServer.store.AddTopic(req.Message.Text)
 				if storeErr != nil {
+					log.Printf("[%s] Failed to create topic for seq=%d: %v\n", s.messageBoardServer.serverAddress, req.SequenceNumber, storeErr)
 					return &protobufStorage.ReplicateWriteAck{
 						SequenceNumber: req.SequenceNumber,
 						Success:        false,
 						ErrorMessage:   fmt.Sprintf("failed to create topic: %v", storeErr),
 					}, nil
 				}
+				log.Printf("[%s] Successfully created topic for seq=%d\n", s.messageBoardServer.serverAddress, req.SequenceNumber)
 			}
 		}
+	} else {
+		log.Printf("[%s] Skipping local application - downstream failed for seq=%d: %s\n", s.messageBoardServer.serverAddress, req.SequenceNumber, ack.ErrorMessage)
 	}
 
+	log.Printf("[%s] Sending confirmation for seq=%d (success=%v)\n", s.messageBoardServer.serverAddress, req.SequenceNumber, ack.Success)
 	return ack, nil
 }
 
