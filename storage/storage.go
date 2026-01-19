@@ -335,6 +335,42 @@ func (db *DatabaseStorage) RegisterSubscription(userID int64, topicIDs []int64) 
 	return token, nil
 }
 
+// RegisterSubscriptionWithToken registers a subscription with a specific token (for replication)
+func (db *DatabaseStorage) RegisterSubscriptionWithToken(token string, userID int64, topicIDs []int64) error {
+	db.lock.Lock()
+	defer db.lock.Unlock()
+
+	// Preveri ali obstaja uporabnik
+	if _, ok := db.users[userID]; !ok {
+		return ErrorUserNotFound
+	}
+
+	// Preveri ali obstajajo vse teme
+	for _, topicID := range topicIDs {
+		if _, ok := db.topics[topicID]; !ok {
+			return ErrorTopicNotFound
+		}
+	}
+
+	// Ustvari kanal
+	channel := make(chan *MessageEvent, 100)
+
+	subscription := &Subscription{
+		TopicIDs: topicIDs,
+		UserID:   userID,
+		Channel:  channel,
+	}
+
+	db.subscriptions[token] = subscription
+
+	// Dodaj kanal v seznam za oddajo dogodkov
+	db.eventLock.Lock()
+	db.eventChannels = append(db.eventChannels, channel)
+	db.eventLock.Unlock()
+
+	return nil
+}
+
 func (db *DatabaseStorage) GetSubscriptionChannel(token string) (chan *MessageEvent, *Subscription, error) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()

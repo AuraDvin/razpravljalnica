@@ -32,6 +32,7 @@ type ServerNode struct {
 	NextServerAddress     string
 	NextServerConn        *grpc.ClientConn
 	NextServerChainClient protobufStorage.ChainReplicationClient
+	SubscriptionStore     *storage.DatabaseStorage // Reference to the server's subscription store
 }
 
 // Global control plane state (synchronized by mutex)
@@ -49,21 +50,31 @@ func initControlPlane() {
 }
 
 // RegisterServer registers a server with the control plane
+// This is called by each server to register itself when it starts
 func (s *controlPlaneServer) RegisterServer(ctx context.Context, req *protobufStorage.ServerRegistration) (*emptypb.Empty, error) {
 	cpMutex.Lock()
-	defer cpMutex.Unlock()
 
 	log.Printf("Registering server %s with role %v\n", req.ServerAddress, req.Role)
 
-	node := &ServerNode{
-		Address:             req.ServerAddress,
-		Role:                req.Role,
-		ActiveSubscriptions: 0,
+	// If this is a new server registration, update its node in the registry
+	// The messageBoardServer will set the SubscriptionStore after this call
+	node, exists := serverRegistry[req.ServerAddress]
+	if !exists {
+		node = &ServerNode{
+			Address:             req.ServerAddress,
+			Role:                req.Role,
+			ActiveSubscriptions: 0,
+		}
+		serverRegistry[req.ServerAddress] = node
+	} else {
+		// Update role if it changed
+		node.Role = req.Role
 	}
 
-	serverRegistry[req.ServerAddress] = node
+	cpMutex.Unlock()
 
 	// Update head and tail addresses
+	cpMutex.Lock()
 	for addr, n := range serverRegistry {
 		if n.Role == protobufStorage.ServerRole_HEAD {
 			headServerAddress = addr
@@ -72,6 +83,7 @@ func (s *controlPlaneServer) RegisterServer(ctx context.Context, req *protobufSt
 			tailServerAddress = addr
 		}
 	}
+	cpMutex.Unlock()
 
 	return &emptypb.Empty{}, nil
 }
@@ -180,6 +192,28 @@ func (s *controlPlaneServer) GetSubscriptionNode(ctx context.Context, req *proto
 	token, err := s.headServer.store.RegisterSubscription(req.UserId, req.TopicId)
 	if err != nil {
 		return nil, err
+	}
+
+	log.Printf("[ControlPlane] Registered subscription token on head server for user %d on topics %v\n", req.UserId, req.TopicId)
+
+	// Also register the subscription on the chosen subscription server's store
+	// This ensures the subscription server can validate the token when client connects
+	if subsServer.Address != s.headServer.serverAddress {
+		cpMutex.RLock()
+		subsNode := serverRegistry[subsServer.Address]
+		cpMutex.RUnlock()
+
+		if subsNode != nil && subsNode.SubscriptionStore != nil {
+			go func() {
+				log.Printf("[ControlPlane] Replicating subscription token to server %s\n", subsServer.Address)
+				err := subsNode.SubscriptionStore.RegisterSubscriptionWithToken(token, req.UserId, req.TopicId)
+				if err != nil {
+					log.Printf("[ControlPlane] Failed to replicate subscription to %s: %v\n", subsServer.Address, err)
+				} else {
+					log.Printf("[ControlPlane] Successfully replicated subscription token to %s\n", subsServer.Address)
+				}
+			}()
+		}
 	}
 
 	// Report subscription count to the assigned subscription server
@@ -310,6 +344,14 @@ func StartServerChain(basePort int, numServers int) {
 			if err != nil {
 				log.Printf("failed to register server %s with control plane: %v", url, err)
 			}
+
+			// Update the server node with the store reference for subscription replication
+			cpMutex.Lock()
+			node := serverRegistry[url]
+			if node != nil {
+				node.SubscriptionStore = server.store
+			}
+			cpMutex.Unlock()
 
 			// If not the last server, connect to the next one after a short delay
 			if server.nextServerURL != "" {
