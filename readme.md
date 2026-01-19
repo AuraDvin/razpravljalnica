@@ -59,7 +59,7 @@ Nato prevzamemo identiteto z ID številko odgovora strežnika.
 ```bash
 > setuser 1
 ```
-Potem lahko uporabljamo ostale, zgoraj navedene ukaze ukaze. (ustvarjanje tem, pošiljanje sporočil, naročanje ipd.).
+Potem lahko uporabljamo ostale, zgoraj navedene ukaze ukaze (ustvarjanje tem, pošiljanje sporočil, naročanje ipd.).
 
 Omejimo lahko pridobivanje sporočil, vpišemo ID teme, nato ID uporabika (ali 0 - privzeto za vse uporabnike) nato pa omejitev števila sporočil (privzeto 100).
 
